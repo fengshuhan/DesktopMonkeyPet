@@ -1,290 +1,384 @@
 import ctypes
+import logging
+import math
 import os
 import random
 import sys
 import time
-import winsound
 from ctypes import wintypes
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QContextMenuEvent, QCursor, QIcon, QPixmap, QTransform
+from PySide6.QtCore import Qt, QTimer, QRect
+from PySide6.QtGui import QIcon, QPainter, QPixmap, QTransform
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
+try:
+    import winsound
+except Exception:
+    winsound = None
+
+APP_NAME = "Desktop Monkey Pet"
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+CHARACTER_PATH = os.path.join(ASSETS_DIR, "character.png")
+DAD_PATH = os.path.join(ASSETS_DIR, "dad.wav")
+LOG_PATH = os.path.join(BASE_DIR, "DesktopMonkeyPet.log")
+
+logging.basicConfig(
+    filename=LOG_PATH,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    encoding="utf-8",
+)
+log = logging.getLogger(APP_NAME)
+
 USER32 = ctypes.windll.user32
-DWMWA_EXTENDED_FRAME_BOUNDS = 9
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x80
-WS_EX_NOACTIVATE = 0x08000000
-WS_EX_LAYERED = 0x80000
 
+def screen_rect(app):
+    screen = app.primaryScreen()
+    return screen.availableGeometry() if screen else QRect(0, 0, 1280, 720)
 
-def rect_from_hwnd(hwnd):
+def window_rect(hwnd):
     r = wintypes.RECT()
     if USER32.GetWindowRect(hwnd, ctypes.byref(r)):
-        return QRect(r.left, r.top, r.right - r.left, r.bottom - r.top)
+        return QRect(r.left, r.top, r.right-r.left, r.bottom-r.top)
     return QRect()
 
-
-def visible_app_windows(exclude_hwnds):
-    out = []
+def visible_windows(exclude):
+    result = []
     shell = USER32.GetShellWindow()
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
     def enum_proc(hwnd, _):
-        if hwnd in exclude_hwnds or hwnd == shell:
-            return True
-        if not USER32.IsWindowVisible(hwnd):
-            return True
-        if USER32.IsIconic(hwnd):
-            return True
-        ex = USER32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        if ex & WS_EX_TOOLWINDOW:
-            return True
-        title_len = USER32.GetWindowTextLengthW(hwnd)
-        if title_len <= 0:
-            return True
-        r = rect_from_hwnd(hwnd)
-        if r.width() >= 120 and r.height() >= 60:
-            out.append(r)
+        try:
+            if hwnd in exclude or hwnd == shell:
+                return True
+            if not USER32.IsWindowVisible(hwnd) or USER32.IsIconic(hwnd):
+                return True
+            ex = USER32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if ex & WS_EX_TOOLWINDOW:
+                return True
+            if USER32.GetWindowTextLengthW(hwnd) == 0:
+                return True
+            r = window_rect(hwnd)
+            if r.width() >= 160 and r.height() >= 80:
+                result.append(r)
+        except Exception:
+            pass
         return True
 
     USER32.EnumWindows(enum_proc, 0)
-    return out
+    return result
 
+def make_tray_icon():
+    # Deliberately draw a visible icon rather than using the large character PNG.
+    pm = QPixmap(64, 64)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(Qt.yellow)
+    p.setPen(Qt.black)
+    p.drawEllipse(5, 5, 54, 54)
+    p.setBrush(Qt.black)
+    p.drawEllipse(19, 22, 7, 9)
+    p.drawEllipse(38, 22, 7, 9)
+    p.drawArc(18, 28, 28, 22, 200 * 16, 140 * 16)
+    p.end()
+    return QIcon(pm)
 
-class PetState:
-    def __init__(self, screen):
-        self.screen = screen
-        self.w = 108
-        self.h = 108
-        self.x = random.randint(0, max(0, screen.width() - self.w))
-        self.y = random.randint(0, max(0, screen.height() - self.h - 80))
-        self.vx = random.choice([-1, 1]) * random.uniform(0.7, 1.7)
-        self.vy = 0.0
-        self.mode = random.choice(["walk", "walk", "idle", "jump"])
-        self.mode_until = time.monotonic() + random.uniform(0.8, 3.0)
-        self.platform_y = float(screen.height() - 8)
-        self.facing = 1 if self.vx >= 0 else -1
-        self.stuck = 0.0
-        self.jump_cd = random.uniform(0.2, 1.8)
+def fallback_pixmap(size=140):
+    # Visible fallback so a bad/missing PNG never results in "nothing".
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(Qt.yellow)
+    p.setPen(Qt.black)
+    p.drawEllipse(18, 15, size-36, size-30)
+    p.setBrush(Qt.black)
+    p.drawEllipse(43, 55, 13, 16)
+    p.drawEllipse(size-56, 55, 13, 16)
+    p.drawEllipse(size//2-8, 75, 16, 13)
+    p.drawArc(45, 77, size-90, 35, 200*16, 140*16)
+    p.end()
+    return pm
 
-    def choose(self):
-        now = time.monotonic()
-        if now < self.mode_until:
-            return
-        self.mode = random.choices(["walk", "idle", "jump", "cling"], [5, 2, 2, 1])[0]
-        self.mode_until = now + random.uniform(0.8, 2.8)
-        if self.mode == "walk":
-            self.vx = random.choice([-1, 1]) * random.uniform(0.7, 2.0)
-        elif self.mode == "idle":
-            self.vx = 0
-        elif self.mode == "jump":
-            self.vy = -random.uniform(7.0, 10.0)
-            self.vx = random.choice([-1, 1]) * random.uniform(1.2, 2.5)
-        else:
-            self.vx = random.choice([-1, 1]) * random.uniform(0.8, 1.6)
-
-
-class PetWindow(QWidget):
+class Pet:
     def __init__(self, app, index, pixmap):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.app = app
         self.index = index
+        self.w = 140
+        self.h = 140
+        sr = app.screen_rect
+        self.x = random.randint(sr.left(), max(sr.left(), sr.right()-self.w))
+        self.y = random.randint(sr.top(), max(sr.top(), sr.bottom()-self.h-20))
+        self.vx = random.choice([-1, 1]) * random.uniform(0.8, 2.2)
+        self.vy = 0.0
+        self.state = random.choice(["walk", "walk", "idle", "jump"])
+        self.next_state = time.monotonic() + random.uniform(.7, 2.5)
+        self.facing = 1 if self.vx >= 0 else -1
+        self.window_mode = False
+        self.window_target = None
+
+        self.widget = PetWidget(app, self, pixmap)
+        self.widget.show()
+        self.widget.move(int(self.x), int(self.y))
+        self.widget.raise_()
+
+    def choose_state(self):
+        now = time.monotonic()
+        if now < self.next_state:
+            return
+        self.state = random.choices(
+            ["walk", "idle", "jump", "walk", "window"],
+            weights=[4, 2, 2, 4, 1],
+        )[0]
+        self.next_state = now + random.uniform(.8, 3.2)
+        if self.state == "idle":
+            self.vx = 0
+        elif self.state == "walk":
+            self.vx = random.choice([-1, 1]) * random.uniform(.8, 2.5)
+        elif self.state == "jump":
+            self.vy = -random.uniform(8.5, 12)
+            self.vx = random.choice([-1, 1]) * random.uniform(1.5, 3)
+        elif self.state == "window":
+            self.vx = random.choice([-1, 1]) * random.uniform(.8, 1.8)
+
+class PetWidget(QWidget):
+    def __init__(self, app, pet, pixmap):
+        flags = Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        super().__init__(None, flags)
+        self.app = app
+        self.pet = pet
         self.pixmap = pixmap
-        self.state = PetState(app.screen_geo)
+        self.setFixedSize(pet.w, pet.h)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setFixedSize(108, 108)
-        self.show()
-        self.move(int(self.state.x), int(self.state.y))
+        self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
 
-    def paintEvent(self, event):
-        from PySide6.QtGui import QPainter
+    def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         pm = self.pixmap
-        if self.state.facing < 0:
+        if self.pet.facing < 0:
             pm = pm.transformed(QTransform().scale(-1, 1))
-        # Tiny bounce makes the still photo feel alive.
-        bob = int(2 * abs(__import__('math').sin(time.monotonic() * 7 + self.index)))
-        p.drawPixmap(0, bob, pm.scaled(108, 108, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        bob = int(abs(math.sin(time.monotonic()*6 + self.pet.index))*3)
+        target = QRect(4, 4+bob, self.width()-8, self.height()-8)
+        p.drawPixmap(target, pm)
+        p.end()
 
-    def contextMenuEvent(self, event: QContextMenuEvent):
-        menu = QMenu(self)
-        call = menu.addAction("🔊 叫爸爸")
-        menu.addSeparator()
-        add = menu.addAction("➕ 再来一只")
-        pause = menu.addAction("⏸ 暂停全部" if not self.app.paused else "▶ 继续全部")
-        exit_action = menu.addAction("✕ 退出")
-        action = menu.exec(QCursor.pos())
-        if action == call:
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.pet.vy = -10
+            self.pet.vx = random.choice([-1, 1]) * 3
+            e.accept()
+        elif e.button() == Qt.RightButton:
             self.app.play_dad()
-        elif action == add:
+            e.accept()
+
+    def contextMenuEvent(self, e):
+        menu = QMenu()
+        a1 = menu.addAction("🔊 叫爸爸")
+        a2 = menu.addAction("➕ 再来一只")
+        a3 = menu.addAction("⏸ 暂停 / 继续")
+        a4 = menu.addAction("✕ 退出")
+        chosen = menu.exec(e.globalPos())
+        if chosen == a1:
+            self.app.play_dad()
+        elif chosen == a2:
             self.app.add_pet()
-        elif action == pause:
+        elif chosen == a3:
             self.app.paused = not self.app.paused
-        elif action == exit_action:
+        elif chosen == a4:
             self.app.quit()
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.state.vy = -8.5
-            self.state.vx = random.choice([-1, 1]) * 2.5
-            self.update()
-            event.accept()
-
-
 class MonkeyApp:
-    def __init__(self):
-        self.qt = QApplication.instance()
-        self.qt.setQuitOnLastWindowClosed(False)
-        self.screen_geo = self.qt.primaryScreen().geometry()
+    def __init__(self, qt):
+        self.qt = qt
+        self.screen_rect = screen_rect(qt)
         self.pets = []
         self.paused = False
-        self.max_pets = 12
+        self.max_pets = 15
+        self.platforms = []
+        self.visible = True
+
         self.pixmap = self.load_character()
-        self.tray = QSystemTrayIcon(QIcon(self.pixmap), self.qt)
+        self.tray = QSystemTrayIcon(make_tray_icon(), qt)
         self.tray.setToolTip("桌面猴群")
         self.menu = QMenu()
-        self.build_menu()
+        self.rebuild_menu()
         self.tray.setContextMenu(self.menu)
         self.tray.show()
-        for _ in range(8):
+
+        for _ in range(6):
             self.add_pet()
+
+        self.platform_timer = QTimer()
+        self.platform_timer.timeout.connect(self.refresh_platforms)
+        self.platform_timer.start(1000)
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.tick)
         self.timer.start(30)
-        self.window_timer = QTimer()
-        self.window_timer.timeout.connect(self.refresh_platforms)
-        self.window_timer.start(1000)
-        self.platforms = []
+
         self.refresh_platforms()
+        log.info("Started successfully. pets=%d image=%s size=%s",
+                 len(self.pets), CHARACTER_PATH, self.pixmap.size())
 
     def load_character(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "assets", "character.png")
-        pm = QPixmap(os.path.abspath(path))
+        pm = QPixmap(CHARACTER_PATH)
         if pm.isNull():
-            # Fallback: a simple transparent monkey-face glyph.
-            pm = QPixmap(108, 108)
-            pm.fill(Qt.transparent)
+            log.warning("character.png could not be loaded; using visible fallback.")
+            return fallback_pixmap()
+        log.info("Loaded character.png: %dx%d alpha=%s",
+                 pm.width(), pm.height(), pm.hasAlphaChannel())
         return pm
 
-    def build_menu(self):
+    def rebuild_menu(self):
         self.menu.clear()
         title = self.menu.addAction("🐒 桌面猴群")
         title.setEnabled(False)
         self.menu.addSeparator()
-        add = self.menu.addAction("➕ 增加一只")
-        remove = self.menu.addAction("➖ 减少一只")
-        pause = self.menu.addAction("⏸ 暂停 / 继续")
-        hide = self.menu.addAction("👻 隐藏 / 显示")
+        a = self.menu.addAction(f"➕ 增加一只（{len(self.pets)}/{self.max_pets}）")
+        r = self.menu.addAction("➖ 减少一只")
+        p = self.menu.addAction("▶ 继续" if self.paused else "⏸ 暂停")
+        h = self.menu.addAction("👻 隐藏 / 显示")
         self.menu.addSeparator()
-        audio = self.menu.addAction("🔊 右键音频：" + ("已设置" if self.audio_path() else "未设置"))
-        audio.setEnabled(False)
-        exit_action = self.menu.addAction("✕ 退出全部")
-        add.triggered.connect(self.add_pet)
-        remove.triggered.connect(self.remove_pet)
-        pause.triggered.connect(self.toggle_pause)
-        hide.triggered.connect(self.toggle_visible)
-        exit_action.triggered.connect(self.quit)
-
-    def audio_path(self):
-        return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "dad.wav"))
-
-    def play_dad(self):
-        p = self.audio_path()
-        if os.path.exists(p) and os.path.getsize(p) > 44:
-            try:
-                winsound.PlaySound(p, winsound.SND_FILENAME | winsound.SND_ASYNC)
-                return
-            except Exception:
-                pass
-        self.tray.showMessage("桌面猴群", "还没有设置 dad.wav，先把音频放进 assets 文件夹即可。", QSystemTrayIcon.Information, 2200)
+        audio = "已设置" if os.path.isfile(DAD_PATH) and os.path.getsize(DAD_PATH) > 44 else "未设置"
+        info = self.menu.addAction(f"🔊 右键音频：{audio}")
+        info.setEnabled(False)
+        self.menu.addSeparator()
+        q = self.menu.addAction("✕ 退出全部")
+        a.triggered.connect(self.add_pet)
+        r.triggered.connect(self.remove_pet)
+        p.triggered.connect(self.toggle_pause)
+        h.triggered.connect(self.toggle_visible)
+        q.triggered.connect(self.quit)
 
     def add_pet(self):
         if len(self.pets) >= self.max_pets:
             return
-        self.pets.append(PetWindow(self, len(self.pets), self.pixmap))
-        self.build_menu()
+        pet = Pet(self, len(self.pets), self.pixmap)
+        self.pets.append(pet)
+        self.rebuild_menu()
 
     def remove_pet(self):
         if self.pets:
             pet = self.pets.pop()
-            pet.close()
-        self.build_menu()
+            pet.widget.close()
+        self.rebuild_menu()
 
     def toggle_pause(self):
         self.paused = not self.paused
-        self.build_menu()
+        self.rebuild_menu()
 
     def toggle_visible(self):
-        any_visible = any(p.isVisible() for p in self.pets)
-        for p in self.pets:
-            p.setVisible(not any_visible)
+        self.visible = not self.visible
+        for pet in self.pets:
+            pet.widget.setVisible(self.visible)
 
     def refresh_platforms(self):
-        self.platforms = visible_app_windows({int(p.winId()) for p in self.pets})
+        try:
+            exclude = {int(p.widget.winId()) for p in self.pets}
+            self.platforms = visible_windows(exclude)
+        except Exception as exc:
+            log.exception("Platform refresh failed: %s", exc)
 
-    def nearest_platform(self, x, y, w, h):
-        best = float(self.screen_geo.bottom())
+    def landing_y(self, pet):
+        # Desktop bottom plus tops of normal application windows.
+        bottom = self.screen_rect.bottom()
+        best = float(bottom)
+        x1, x2 = pet.x + 25, pet.x + pet.w - 25
         for r in self.platforms:
-            if x + w * 0.35 < r.right() and x + w * 0.65 > r.left():
-                top = r.top()
-                if top >= y + h - 4 and top < best:
-                    best = top
+            if x2 > r.left() and x1 < r.right() and r.top() >= pet.y:
+                if r.top() < best:
+                    best = r.top()
         return best
 
     def tick(self):
         if self.paused:
             return
         for pet in self.pets:
-            s = pet.state
-            s.choose()
-            dt = 0.03
-            s.vy += 0.42
-            s.x += s.vx
-            s.y += s.vy
-            if s.vx:
-                s.facing = 1 if s.vx > 0 else -1
-            if s.x <= 0:
-                s.x = 0; s.vx = abs(s.vx)
-            if s.x + s.w >= self.screen_geo.width():
-                s.x = self.screen_geo.width() - s.w; s.vx = -abs(s.vx)
+            try:
+                s = pet
+                s.choose_state()
 
-            floor = self.nearest_platform(s.x, s.y, s.w, s.h)
-            if s.y + s.h >= floor and s.vy >= 0:
-                s.y = floor - s.h
-                s.vy = 0
-                if s.mode == "jump":
-                    s.mode = "walk"
-                    s.mode_until = time.monotonic() + random.uniform(0.5, 1.5)
-                if random.random() < 0.004:
-                    s.vy = -random.uniform(7, 10)
+                s.vy += 0.42
+                s.x += s.vx
+                s.y += s.vy
 
-            # Occasional window-edge climb: run upward beside a window then hop off.
-            if s.mode == "cling" and self.platforms:
-                for r in self.platforms:
-                    if abs((s.x + s.w) - r.left()) < 10 and r.top() < s.y < r.bottom():
-                        s.x = r.left() - s.w + 2
-                        s.y -= 1.7
-                        if s.y < r.top() - s.h:
-                            s.mode = "jump"; s.vy = -8; s.vx = 2.0
-                        break
-            pet.move(int(s.x), int(s.y))
-            pet.update()
+                if s.vx:
+                    s.facing = 1 if s.vx > 0 else -1
+
+                left = self.screen_rect.left()
+                right = self.screen_rect.right() - s.w
+                if s.x <= left:
+                    s.x = left
+                    s.vx = abs(s.vx)
+                elif s.x >= right:
+                    s.x = right
+                    s.vx = -abs(s.vx)
+
+                floor = self.landing_y(s)
+                if s.y + s.h >= floor and s.vy >= 0:
+                    s.y = floor - s.h
+                    s.vy = 0
+                    if random.random() < 0.006:
+                        s.vy = -random.uniform(8, 11)
+
+                # Gentle flocking: nearby pets occasionally move toward each other.
+                for other in self.pets:
+                    if other is s:
+                        continue
+                    dx = other.x - s.x
+                    dy = other.y - s.y
+                    if abs(dx) < 220 and abs(dy) < 90 and random.random() < 0.002:
+                        s.vx += 0.7 if dx > 0 else -0.7
+
+                # Avoid overlapping too much.
+                for other in self.pets:
+                    if other is s:
+                        continue
+                    if abs(other.x-s.x) < 65 and abs(other.y-s.y) < 55:
+                        s.vx += -0.35 if other.x > s.x else 0.35
+
+                s.vx = max(-3.5, min(3.5, s.vx))
+                s.widget.move(int(s.x), int(s.y))
+                s.widget.update()
+            except Exception:
+                log.exception("Pet tick failed")
+
+    def play_dad(self):
+        if winsound and os.path.isfile(DAD_PATH) and os.path.getsize(DAD_PATH) > 44:
+            try:
+                winsound.PlaySound(DAD_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                return
+            except Exception:
+                log.exception("Audio playback failed")
+        self.tray.showMessage(
+            "桌面猴群",
+            "还没有 dad.wav。\n以后把音频放进 assets\\dad.wav 即可。",
+            QSystemTrayIcon.Information,
+            2500,
+        )
 
     def quit(self):
-        for p in self.pets:
-            p.close()
+        log.info("Exiting.")
+        for pet in self.pets:
+            pet.widget.close()
         self.tray.hide()
         self.qt.quit()
 
-
 def main():
-    app = QApplication(sys.argv)
-    MonkeyApp()
-    sys.exit(app.exec())
-
+    try:
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+        MonkeyApp(app)
+        return app.exec()
+    except Exception:
+        log.exception("Fatal startup error")
+        raise
 
 if __name__ == "__main__":
     main()
