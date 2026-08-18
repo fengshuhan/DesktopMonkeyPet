@@ -1,32 +1,23 @@
-# Desktop Monkey Pet 🐒
+# DesktopMonkeyPet v2
 
-Windows 桌面宠物原型：多只人物宠物在桌面上随机移动、跳跃，并把可见应用窗口当作简单的平台/障碍物。
+This version fixes the "EXE runs but no monkey appears" problem by:
 
-## 当前功能
-- 8 只宠物启动，可从托盘增加/减少，最多 12 只。
-- 独立随机 AI：走动、待机、跳跃、贴边攀爬。
-- 重力与窗口顶部平台检测。
-- 屏幕左右边缘反弹。
-- 左键点击宠物：让它跳起来。
-- 右键宠物：`叫爸爸`，预留 `assets/dad.wav`。
-- 系统托盘：暂停/继续、隐藏/显示、增减宠物、退出。
-- GitHub Actions 自动生成 Windows EXE。
+- using a dedicated visible tray icon
+- using a visible fallback character if `assets/character.png` cannot load
+- writing `DesktopMonkeyPet.log`
+- adding safer startup/error handling
+- keeping the supplied character image path at `assets/character.png`
+- keeping `assets/dad.wav` reserved for future right-click audio
+- retaining multiple pets, random movement, jumping, window-top platforms and basic flocking
 
-## 运行
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python src/main.py
-```
+## Important
 
-## 打包
-```powershell
-.\build.ps1
-```
+Keep your real `assets/character.png` from the existing repository. This ZIP intentionally does not overwrite it.
 
-## 人物素材
-程序读取 `assets/character.png`。需要透明背景 PNG。当前 ZIP 没有伪造声称已经从上一条聊天图片完成抠图；请把最终抠图文件放到该位置即可。
+Replace `assets/dad.wav` later when you have the "叫爸爸" recording.
 
-## 音频
-将“叫爸爸”音频保存为 `assets/dad.wav`。没有音频时右键仍然可用，只会提示尚未设置。
+## Build
+
+GitHub Actions builds `DesktopMonkeyPet-windows-v2`.
+
+If the EXE still has a problem, run it from PowerShell or send `DesktopMonkeyPet.log`.
