@@ -8,8 +8,9 @@ import time
 from ctypes import wintypes
 
 from PySide6.QtCore import Qt, QTimer, QRect
-from PySide6.QtGui import QIcon, QPainter, QPixmap, QTransform
+from PySide6.QtGui import QIcon, QPainter, QPixmap, QTransform, QImage
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
+from PIL import Image
 
 try:
     import winsound
@@ -226,14 +227,37 @@ class MonkeyApp:
         log.info("Started successfully. pets=%d image=%s size=%s",
                  len(self.pets), CHARACTER_PATH, self.pixmap.size())
 
-    def load_character(self):
-        pm = QPixmap(CHARACTER_PATH)
+   def load_character(self):
+    try:
+        with Image.open(CHARACTER_PATH) as im:
+            im = im.convert("RGBA")
+            width, height = im.size
+            raw = im.tobytes("raw", "RGBA")
+
+        image = QImage(
+            raw,
+            width,
+            height,
+            width * 4,
+            QImage.Format_RGBA8888
+        ).copy()
+
+        pm = QPixmap.fromImage(image)
+
         if pm.isNull():
-            log.warning("character.png could not be loaded; using visible fallback.")
-            return fallback_pixmap()
-        log.info("Loaded character.png: %dx%d alpha=%s",
-                 pm.width(), pm.height(), pm.hasAlphaChannel())
+            raise RuntimeError("QPixmap.fromImage returned a null pixmap")
+
+        log.info(
+            "Loaded character.png via Pillow: %dx%d alpha=%s",
+            pm.width(),
+            pm.height(),
+            pm.hasAlphaChannel()
+        )
         return pm
+
+    except Exception as exc:
+        log.exception("character.png could not be loaded via Pillow: %s", exc)
+        return fallback_pixmap()
 
     def rebuild_menu(self):
         self.menu.clear()
