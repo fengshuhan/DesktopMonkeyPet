@@ -229,36 +229,38 @@ class MonkeyApp:
 
     def load_character(self):
         try:
-        with Image.open(CHARACTER_PATH) as im:
-            im = im.convert("RGBA")
-            width, height = im.size
-            raw = im.tobytes("raw", "RGBA")
+            with Image.open(CHARACTER_PATH) as im:
+                im = im.convert("RGBA")
+                width, height = im.size
+                raw = im.tobytes("raw", "RGBA")
 
-        image = QImage(
-            raw,
-            width,
-            height,
-            width * 4,
-            QImage.Format_RGBA8888
-        ).copy()
+            image = QImage(
+                raw,
+                width,
+                height,
+                width * 4,
+                QImage.Format_RGBA8888
+            ).copy()
 
-        pm = QPixmap.fromImage(image)
+            pm = QPixmap.fromImage(image)
 
-        if pm.isNull():
-            raise RuntimeError("QPixmap.fromImage returned a null pixmap")
+            if pm.isNull():
+                raise RuntimeError("QPixmap.fromImage returned a null pixmap")
 
-        log.info(
-            "Loaded character.png via Pillow: %dx%d alpha=%s",
-            pm.width(),
-            pm.height(),
-            pm.hasAlphaChannel()
-        )
-        return pm
+            log.info(
+                "Loaded character.png via Pillow: %dx%d alpha=%s",
+                pm.width(),
+                pm.height(),
+                pm.hasAlphaChannel()
+            )
+            return pm
 
-    except Exception as exc:
-        log.exception("character.png could not be loaded via Pillow: %s", exc)
-        return fallback_pixmap()
-
+        except Exception as exc:
+            log.exception(
+                "character.png could not be loaded via Pillow: %s",
+                exc
+            )
+            return fallback_pixmap()
     def rebuild_menu(self):
         self.menu.clear()
         title = self.menu.addAction("🐒 桌面猴群")
