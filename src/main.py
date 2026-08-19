@@ -19,11 +19,19 @@ except Exception:
     winsound = None
 
 APP_NAME = "Desktop Monkey Pet"
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+
+# Locate assets correctly in both source mode and PyInstaller EXE mode.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    RESOURCE_DIR = sys._MEIPASS
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    RESOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    APP_DIR = RESOURCE_DIR
+
+ASSETS_DIR = os.path.join(RESOURCE_DIR, "assets")
 CHARACTER_PATH = os.path.join(ASSETS_DIR, "character.png")
 DAD_PATH = os.path.join(ASSETS_DIR, "dad.wav")
-LOG_PATH = os.path.join(BASE_DIR, "DesktopMonkeyPet.log")
+LOG_PATH = os.path.join(APP_DIR, "DesktopMonkeyPet.log")
 
 logging.basicConfig(
     filename=LOG_PATH,
