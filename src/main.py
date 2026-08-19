@@ -233,6 +233,7 @@ class MonkeyApp:
                 im = im.convert("RGBA")
                 width, height = im.size
                 raw = im.tobytes("raw", "RGBA")
+                
             image = QImage(
                 raw,
                 width,
@@ -240,9 +241,12 @@ class MonkeyApp:
                 width * 4,
                 QImage.Format_RGBA8888
             ).copy()
+            
             pm = QPixmap.fromImage(image)
+            
             if pm.isNull():
                 raise RuntimeError("QPixmap.fromImage returned a null pixmap")
+                
             log.info(
                 "Loaded character.png via Pillow: %dx%d alpha=%s",
                 pm.width(),
@@ -250,6 +254,7 @@ class MonkeyApp:
                 pm.hasAlphaChannel()
             )
             return pm
+            
             except Exception as exc:
                 log.exception(
                     "character.png could not be loaded via Pillow: %s",
