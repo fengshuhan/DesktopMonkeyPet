@@ -227,8 +227,8 @@ class MonkeyApp:
         log.info("Started successfully. pets=%d image=%s size=%s",
                  len(self.pets), CHARACTER_PATH, self.pixmap.size())
 
-   def load_character(self):
-    try:
+    def load_character(self):
+        try:
         with Image.open(CHARACTER_PATH) as im:
             im = im.convert("RGBA")
             width, height = im.size
